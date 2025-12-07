@@ -1,13 +1,16 @@
 {
-  "name": "vite-react-typescript-starter",
+  "name": "microo",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
+  },
+  "engines": {
+    "node": "18.x"
   },
   "dependencies": {
     "framer-motion": "^12.23.25",
