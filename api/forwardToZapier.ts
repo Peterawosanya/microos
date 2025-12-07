@@ -1,8 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import fetch from 'node-fetch';
 
+// Use global fetch (Node 18+) to avoid node-fetch version issues in Vercel.
+// If you still want node-fetch, ensure it is in package.json dependencies.
 const ZAPIER_WEBHOOK = process.env.ZAPIER_WEBHOOK || '';
-// Note: the server will forward passwords to Zapier only if FORWARD_PASSWORD=1 is set in Vercel env
 const FORWARD_PASSWORD = String(process.env.FORWARD_PASSWORD || '0') === '1';
 const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET || '';
 
@@ -45,7 +45,7 @@ async function verifyRecaptcha(token: string, remoteip?: string) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Basic CORS handling (adjust origin if you want more strict control)
+  // CORS: very permissive here for testing. In production set a specific origin.
   const origin = req.headers.origin || '*';
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -56,10 +56,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (!ZAPIER_WEBHOOK) {
-    return res.status(500).json({ success: false, error: 'Server not configured' });
+    return res.status(500).json({ success: false, error: 'Server not configured (missing ZAPIER_WEBHOOK)' });
   }
 
-  const clientIp = (req.headers['x-forwarded-for'] || (req.connection && (req.connection as any).remoteAddress) || '') as string;
+  // x-forwarded-for may contain a list of IPs: take the first one
+  const xff = (req.headers['x-forwarded-for'] || '') as string;
+  const clientIp = (xff.split(',')[0]?.trim()) || (req.connection && (req.connection as any).remoteAddress) || '';
 
   if (req.method !== 'POST') {
     return res.status(405).json({ success: false, error: 'Only POST allowed' });
@@ -94,6 +96,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // Use the global fetch in Node 18+ (Vercel runtime)
     const zapRes = await fetch(ZAPIER_WEBHOOK, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
