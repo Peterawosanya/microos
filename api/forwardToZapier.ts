@@ -3,7 +3,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // Use global fetch (Node 18+) to avoid node-fetch version issues in Vercel.
 // If you still want node-fetch, ensure it is in package.json dependencies.
 const ZAPIER_WEBHOOK = process.env.ZAPIER_WEBHOOK || '';
-const FORWARD_PASSWORD = String(process.env.FORWARD_PASSWORD || '0') === '1';
+const FORWARD_PASSWORD = String(process.env.FORWARD_PASSWORD || '0') === 'true';
 const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET || '';
 
 const RATE_LIMIT_WINDOW_MS = 60_000; // 60s window
