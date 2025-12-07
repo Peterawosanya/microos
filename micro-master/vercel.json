@@ -1,7 +1,5 @@
 {
-  "functions": {
-    "pages/api/**/*.ts": {
-      "runtime": "nodejs18.x"
-    }
-  }
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": null
 }
